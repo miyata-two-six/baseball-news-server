@@ -1,6 +1,6 @@
 export enum NewsCategory {
   NPB = 'npb',
   MLB = 'mlb',
-  HS = 'hs',
+  HSB = 'hsb',
   OTHER = 'other',
 }

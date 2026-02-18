@@ -1,19 +1,8 @@
 import { Injectable, Logger } from '@nestjs/common';
 import axios from 'axios';
 import * as cheerio from 'cheerio';
-
-export type NewsCategory = 'NPB' | 'MLB' | 'HS' | 'OTHER';
-
-export interface GeneratedNews {
-  reference_url: string;
-  reference_name: string;
-  reference_published_at: string; // ISO推奨（無ければ""）
-  header: string;                 // 全角30〜38
-  subheader: string;              // 全角40前後 or ""
-  summary: string;                // 全角120〜180
-  body: string;                   // 200〜600
-  category: NewsCategory;
-}
+import { NewsCategory } from 'src/enums/news/news-category.enum';
+import { GeneratedNews } from 'types/generated-news';
 
 interface GeminiResponse {
   candidates?: {
@@ -122,33 +111,218 @@ export class GeminiService {
    * NPBニュース一覧HTMLから detail URL を自前で抽出する
    */
   async fetchLatestNpbUrls(limit = 30): Promise<string[]> {
-    const listUrl = 'https://npb.jp/news/npb_all.html';
-    const { data: html } = await axios.get<string>(listUrl, { timeout: 10_000 });
+    const baseUrl = "https://npb.jp/news/npb_all.html";
 
-    const $ = cheerio.load(html);
+    const collected = new Set<string>();
+    let page = 1;
 
-    // npb.jp 側のリンク構造に合わせて抽出（必要ならここを調整）
-    const urls: string[] = [];
+    while (collected.size < limit) {
+      const url =
+        page === 1 ? baseUrl : `${baseUrl}?page=${page}`;
 
-    $('a[href]').each((_, el) => {
-      const href = $(el).attr('href');
-      if (!href) return;
+      console.log(`Fetching NPB page: ${url}`);
 
-      // 例: /news/detail/xxxxx.html みたいな形式を拾う想定
-      if (href.includes('/news/detail/')) {
-        const abs = href.startsWith('http') ? href : `https://npb.jp${href}`;
-        urls.push(abs);
-      }
-    });
+      const { data: html } = await axios.get<string>(url, {
+        timeout: 10_000,
+      });
 
-    // 重複排除＆新しい順にしたい場合は、DOM順が新しい順ならそのまま
-    const unique = Array.from(new Set(urls.map((u) => u.trim()).filter(Boolean)));
+      const $ = cheerio.load(html);
 
-    return unique.slice(0, limit);
+      let foundOnThisPage = 0;
+
+      $("a[href]").each((_, el) => {
+        if (collected.size >= limit) return;
+
+        const href = $(el).attr("href");
+        if (!href) return;
+
+        if (href.includes("/news/detail/")) {
+          const abs = href.startsWith("http")
+            ? href
+            : `https://npb.jp${href}`;
+
+          const normalized = abs.trim();
+          if (!collected.has(normalized)) {
+            collected.add(normalized);
+            foundOnThisPage++;
+          }
+        }
+      });
+
+      // これ以上記事がない場合は終了
+      if (foundOnThisPage === 0) break;
+
+      page++;
+    }
+
+    return Array.from(collected).slice(0, limit);
   }
 
   /**
-   * URL一覧を Gemini に渡して記事を生成（20件ずつ推奨）
+   * MLBニュース一覧HTMLから detail URL を自前で抽出する
+   */
+  async fetchLatestMlbUrls(limit = 10): Promise<string[]> {
+    const listUrl = "https://www.mlb.com/news";
+
+    const { data: html } = await axios.get<string>(listUrl, {
+      timeout: 15_000,
+      headers: {
+        "User-Agent":
+          "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/18.3 Safari/605.1.15",
+        Accept: "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+        "Accept-Language": "en-US,en;q=0.9,ja;q=0.8",
+      },
+    });
+
+    const $ = cheerio.load(html);
+
+    const seen = new Set<string>();
+    const out: string[] = [];
+
+    // ★ 記事カード（ニュース）っぽい article を順に拾う
+    // - ただし広告/別用途のarticleも混ざる可能性があるので軽くフィルタする
+    $("article[id]").each((_, el) => {
+      if (out.length >= limit) return;
+
+      const id = ($(el).attr("id") || "").trim();
+      if (!id) return;
+
+      // ありがちなノイズ除外（必要なら追加）
+      if (id.startsWith("ad-")) return;
+
+      // slugっぽい形式だけ許可（英数/ハイフン）
+      if (!/^[a-z0-9-]+$/i.test(id)) return;
+
+      const url = `https://www.mlb.com/news/${id}`;
+
+      if (seen.has(url)) return;
+      seen.add(url);
+      out.push(url);
+    });
+
+    return out;
+  }
+
+  /**
+   * 日刊スポーツ（高校野球）一覧HTMLから詳細URLを自前で抽出
+   * - li -> a の href を拾う
+   * - DOM上から上から順に拾うので基本「最新順」
+   */
+  async fetchLatestHsbUrls(limit = 10): Promise<string[]> {
+    const listUrl = "https://www.nikkansports.com/baseball/highschool/news/index.html";
+
+    const { data: html } = await axios.get<string>(listUrl, {
+      timeout: 15_000,
+      headers: {
+        "User-Agent":
+          "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/18.3 Safari/605.1.15",
+        Accept: "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+        "Accept-Language": "ja,en-US;q=0.9,en;q=0.8",
+      },
+    });
+
+    const $ = cheerio.load(html);
+
+    const seen = new Set<string>();
+    const out: string[] = [];
+
+    $("ul.newslist a[href]").each((_, el) => {
+      if (out.length >= limit) return;
+
+      const href = ($(el).attr("href") || "").trim();
+      if (!href) return;
+
+      const abs = href.startsWith("http")
+        ? href
+        : new URL(href, "https://www.nikkansports.com").toString();
+
+      // 高校野球ニュースっぽいパスだけに絞る（必要なら調整）
+      if (!abs.includes("/baseball/highschool/news/")) return;
+
+      // クエリ除去
+      const u = new URL(abs);
+      u.search = "";
+      u.hash = "";
+      const normalized = u.toString();
+
+      if (seen.has(normalized)) return;
+      seen.add(normalized);
+      out.push(normalized);
+    });
+
+    return out;
+  }
+
+  /**
+   * サンスポ（その他）一覧HTMLから詳細URLを自前で抽出
+   * - li -> a の href を拾う
+   * - DOM上から上から順に拾うので基本「最新順」
+   */
+  async fetchLatestOtherUrls(limit = 10): Promise<string[]> {
+    const listUrl = "https://www.sanspo.com/sports/baseball/others/";
+    const origin = new URL(listUrl).origin;
+
+    const { data: html } = await axios.get<string>(listUrl, {
+      timeout: 15_000,
+      headers: {
+        "User-Agent":
+          "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/18.3 Safari/605.1.15",
+        Accept: "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+        "Accept-Language": "ja,en-US;q=0.9,en;q=0.8",
+      },
+    });
+
+    const $ = cheerio.load(html);
+
+    const seen = new Set<string>();
+    const out: string[] = [];
+
+    // サンスポの記事URLは /article/ を含むことが多い
+    // 例: https://www.sanspo.com/article/20260218-XXXXXX/
+    const isArticleUrl = (u: URL) => {
+      // ドメインチェック
+      if (!/(\.|^)sanspo\.com$/i.test(u.hostname)) return false;
+      // 記事っぽいパスだけ残す（必要なら調整）
+      if (!u.pathname.startsWith("/article/")) return false;
+      return true;
+    };
+
+    $("a[href]").each((_, el) => {
+      if (out.length >= limit) return;
+
+      const href = ($(el).attr("href") || "").trim();
+      if (!href) return;
+
+      let abs: string;
+      try {
+        abs = href.startsWith("http") ? href : new URL(href, origin).toString();
+      } catch {
+        return;
+      }
+
+      try {
+        const u = new URL(abs);
+        // クエリ等は落とす
+        u.search = "";
+        u.hash = "";
+
+        if (!isArticleUrl(u)) return;
+
+        const normalized = u.toString();
+        if (seen.has(normalized)) return;
+
+        seen.add(normalized);
+        out.push(normalized);
+      } catch {
+        return;
+      }
+    });
+
+    return out;
+  }
+
+  /**
+   * URL一覧を Gemini に渡して記事を生成（現状10件ずつ）
    * ※ここは Gemini 依存なので遅い。seedをSSRで待たないようにする。
    */
   async generateNewsFromUrls(
@@ -156,43 +330,43 @@ export class GeminiService {
     category: NewsCategory,
     referenceName: string,
   ): Promise<GeneratedNews[]> {
-    const batches = this.chunk(urls, 10); // ←一旦10に下げると安定しやすい
+    const batches = this.chunk(urls, 10);
     const results: GeneratedNews[] = [];
 
     for (const batch of batches) {
       const prompt = `
-あなたはプロのニュース編集者です。
-以下のURLの記事をそれぞれ読み取り、事実に基づいて「要約」し、その要約を元に「再生成したニュース」を作ってください。
+        あなたはプロの野球ニュース編集者です。
+        以下のURLの記事をそれぞれ読み取り、事実に基づいて「要約」し、その要約を元に「再生成したニュース」を作ってください。
 
-# 厳守ルール
-- 推測・憶測・断定の追加は禁止（記事に書かれている事実のみ）
-- 誇張禁止、煽り禁止
-- 元記事の全文コピーは禁止（要約と再構成のみ）
-- 出力は必ずJSONのみ（コードフェンス不要、余計な文章禁止）
+        # 厳守ルール
+        - 推測・憶測・断定の追加は禁止（記事に書かれている事実のみ）
+        - 誇張禁止、煽り禁止
+        - 元記事の全文コピーは禁止（要約と再構成のみ）
+        - 出力は必ずJSONのみ（コードフェンス不要、余計な文章禁止）
 
-# 文字数（全角目安）
-- header: 30〜38
-- subheader: 40前後（不要なら空文字 ""）
-- summary: 120〜180
-- body: 200〜600
+        # 文字数（全角目安）
+        - header: 30〜38
+        - subheader: 40前後
+        - summary: 120〜180
+        - body: 200〜600
 
-# 出力形式（必ずこの配列）
-[
-  {
-    "reference_url": "URL（必須）",
-    "reference_name": "${referenceName}",
-    "reference_published_at": "記事内の日時を優先してISO形式で（無ければ空文字）",
-    "header": "…",
-    "subheader": "… or \\"\\"",
-    "summary": "…",
-    "body": "…",
-    "category": "${category}"
-  }
-]
+        # 出力形式（必ずこの配列）
+        [
+          {
+            "reference_url": "URL（必須）",
+            "reference_name": "${referenceName}",
+            "reference_published_at": "記事内の日時を優先して必ずISO形式で。（時間が不明な際は00:00:00で埋める。可能なら日本時間で。）",
+            "header": "…",
+            "subheader": "… or \\"\\"",
+            "summary": "…",
+            "body": "…",
+            "category": "${category}"
+          }
+        ]
 
-# 対象URL（新しい順のまま処理）
-${batch.map((u) => `- ${u}`).join('\n')}
-`;
+        # 対象URL（新しい順のまま処理）
+        ${batch.map((u) => `- ${u}`).join('\n')}
+      `;
       console.log("Prompt for Gemini:", prompt);
 
       const text = await this.geminiGenerateText(prompt);
@@ -219,6 +393,27 @@ ${batch.map((u) => `- ${u}`).join('\n')}
   async collectAndGenerateNpbNews(limit = 30): Promise<GeneratedNews[]> {
     const urls = await this.fetchLatestNpbUrls(limit);
     console.log("Fetched URLs:", urls);
-    return await this.generateNewsFromUrls(urls, 'NPB', 'NPB.jp | 日本野球機構');
+    return await this.generateNewsFromUrls(urls, NewsCategory.NPB, 'NPB.jp | 日本野球機構');
+  }
+
+  /** まとめ：MLB 取得→生成 */
+  async collectAndGenerateMlbNews(limit = 10): Promise<GeneratedNews[]> {
+    const urls = await this.fetchLatestMlbUrls(limit);
+    console.log("Fetched URLs:", urls);
+    return await this.generateNewsFromUrls(urls, NewsCategory.MLB, 'MLB.com | The Official Site of Major League Baseball');
+  }
+
+  /** まとめ：HSB 取得→生成 */
+  async collectAndGenerateHsbNews(limit = 10): Promise<GeneratedNews[]> {
+    const urls = await this.fetchLatestHsbUrls(limit);
+    console.log("Fetched URLs:", urls);
+    return await this.generateNewsFromUrls(urls, NewsCategory.HSB, 'nikkansports.com | 日刊スポーツ');
+  }
+
+  /** まとめ：OTHER 取得→生成 */
+  async collectAndGenerateOtherNews(limit = 10): Promise<GeneratedNews[]> {
+    const urls = await this.fetchLatestOtherUrls(limit);
+    console.log("Fetched URLs:", urls);
+    return await this.generateNewsFromUrls(urls, NewsCategory.OTHER, 'sanspo.com | サンスポ');
   }
 }

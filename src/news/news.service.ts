@@ -4,8 +4,7 @@ import { Repository } from 'typeorm';
 import { GeminiService } from '../gemini/gemini.service';
 import { News } from '../entities/news.entity';
 import { NewsCategory } from '../enums/news/news-category.enum';
-
-type CategoryQuery = 'npb' | 'mlb' | 'hs' | 'other';
+import { GeneratedNews } from 'types/generated-news';
 
 type SeedStatus =
   | { status: 'idle' }
@@ -18,10 +17,10 @@ export class NewsService {
   private readonly logger = new Logger(NewsService.name);
 
   // ★プロセス内メモリ（本番はRedis等にするのが理想）
-  private seedStatus: Record<CategoryQuery, SeedStatus> = {
+  private seedStatus: Record<NewsCategory, SeedStatus> = {
     npb: { status: 'idle' },
     mlb: { status: 'idle' },
-    hs: { status: 'idle' },
+    hsb: { status: 'idle' },
     other: { status: 'idle' },
   };
 
@@ -30,63 +29,51 @@ export class NewsService {
     private readonly geminiService: GeminiService,
   ) {}
 
-  private mapCategory(category: CategoryQuery): NewsCategory {
-    switch (category) {
-      case 'npb':
-        return NewsCategory.NPB;
-      case 'mlb':
-        return NewsCategory.MLB;
-      case 'hs':
-        return NewsCategory.HS;
-      default:
-        return NewsCategory.OTHER;
-    }
-  }
-
-  async findByCategory(category: CategoryQuery): Promise<News[]> {
-    const dbCategory = this.mapCategory(category);
+  async findByCategory(category: NewsCategory): Promise<News[]> {
     return this.newsRepository.find({
-      where: { category: dbCategory },
+      where: { category: category },
       order: { reference_published_at: 'DESC' },
       take: 100,
     });
   }
 
-  getSeedStatus(category: CategoryQuery): SeedStatus {
+  getSeedStatus(category: NewsCategory): SeedStatus {
     return this.seedStatus[category] ?? { status: 'idle' };
   }
 
-  private async performSeed(category: CategoryQuery, startedAt: string): Promise<void> {
+  private async performSeed(category: NewsCategory, startedAt: string): Promise<void> {
     let inserted = 0;
+    let generated: GeneratedNews[] = [];
 
-    if (category === 'npb') {
-      const generated = await this.geminiService.collectAndGenerateNpbNews(10); // まずは10件推奨
-      console.log("Generated news from Gemini:", generated);
-
-      const dbCategory = this.mapCategory(category);
-      console.log("Mapped category for DB:", dbCategory);
-
-      const entities = generated.map((g) =>
-        this.newsRepository.create({
-          category: dbCategory,
-          reference_url: g.reference_url,
-          reference_name: g.reference_name,
-          reference_published_at: g.reference_published_at || undefined,
-          header: g.header,
-          subheader: g.subheader,
-          summary: g.summary,
-          body: g.body,
-        }),
-      );
-      console.log("Entities to save:", entities);
-
-      await this.newsRepository.save(entities);
-      inserted = entities.length;
-      console.log(`Inserted ${inserted} news items into the database.`);
+    if (category === NewsCategory.NPB) {
+      generated = await this.geminiService.collectAndGenerateNpbNews(30);
+    } else if (category === NewsCategory.MLB) {
+      generated = await this.geminiService.collectAndGenerateMlbNews(10);
+    } else if (category === NewsCategory.HSB) {
+      generated = await this.geminiService.collectAndGenerateHsbNews(10);
     } else {
-      // TODO: MLB/HS/OTHER
-      inserted = 0;
+      generated = await this.geminiService.collectAndGenerateOtherNews(10);
     }
+    console.log("Generated news from Gemini:", generated);
+    console.log("Mapped category for DB:", category);
+
+    const entities = generated.map((g) =>
+      this.newsRepository.create({
+        category: category,
+        reference_url: g.reference_url,
+        reference_name: g.reference_name,
+        reference_published_at: g.reference_published_at || undefined,
+        header: g.header,
+        subheader: g.subheader,
+        summary: g.summary,
+        body: g.body,
+      }),
+    );
+    console.log("Entities to save:", entities);
+
+    await this.newsRepository.save(entities);
+    inserted = entities.length;
+    console.log(`Inserted ${inserted} news items into the database.`);
 
     this.seedStatus[category] = {
       status: 'done',
@@ -101,12 +88,11 @@ export class NewsService {
    * - 既にrunningなら何もしない
    * - DBに既にあるならdone扱いにして何もしない
    */
-  async startSeedIfEmpty(category: CategoryQuery): Promise<SeedStatus> {
+  async startSeedIfEmpty(category: NewsCategory): Promise<SeedStatus> {
     const current = this.getSeedStatus(category);
     if (current.status === 'running') return current;
 
-    const dbCategory = this.mapCategory(category);
-    const count = await this.newsRepository.count({ where: { category: dbCategory } });
+    const count = await this.newsRepository.count({ where: { category: category } });
 
     // 既にあるならseed不要
     if (count > 0) {
