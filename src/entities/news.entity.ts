@@ -25,42 +25,42 @@ export class News {
 
   @Column({
     type: 'varchar',
-    length: 50,
+    length: 100,
     nullable: false,
   })
   header: string;
 
   @Column({
     type: 'varchar',
-    length: 60,
+    length: 100,
     nullable: false,
   })
   subheader: string;
 
   @Column({
     type: 'varchar',
-    length: 500,
+    length: 1000,
     nullable: false,
   })
   body: string;
 
   @Column({
     type: 'varchar',
-    length: 200,
+    length: 300,
     nullable: false,
   })
   summary: string;
 
   @Column({
     type: 'varchar',
-    length: 100,
+    length: 200,
     nullable: false,
   })
   reference_name: string;
 
   @Column({
     type: 'varchar',
-    length: 500,
+    length: 600,
     nullable: false,
     unique: true,
   })

@@ -14,9 +14,10 @@ interface GeminiResponse {
 export class GeminiService {
   private readonly logger = new Logger(GeminiService.name);
 
-  // 公式例に合わせたモデル指定（必要ならここだけ変える）
+  // 1. モデル名を実在する最新のものに変更
+  // Groundingを使う場合は v1beta を使用するのが確実です
   private readonly endpoint =
-    'https://generativelanguage.googleapis.com/v1beta/models/gemini-3-flash-preview:generateContent';
+    'https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent';
 
   private requireEnv(name: string): string {
     const v = process.env[name];
@@ -26,78 +27,89 @@ export class GeminiService {
 
   private async geminiGenerateText(prompt: string): Promise<string> {
     const apiKey = this.requireEnv('GEMINI_API_KEY');
-
-    // Node fetch(undici) タイムアウト対策
-    const controller = new AbortController();
     const timeoutMs = 600_000;
-    const t = setTimeout(() => controller.abort(), timeoutMs);
+    const maxRetry = 3;
 
-    // 503/429 を軽くリトライ（最大2回）
-    const maxRetry = 2;
+    for (let attempt = 0; attempt <= maxRetry; attempt++) {
+      const controller = new AbortController();
+      const t = setTimeout(() => controller.abort(), timeoutMs);
 
-    try {
-      for (let attempt = 0; attempt <= maxRetry; attempt++) {
-        try {
-          const res = await fetch(this.endpoint, {
-            method: 'POST',
-            headers: {
-              'Content-Type': 'application/json',
-              'x-goog-api-key': apiKey,
+      try {
+        const res = await fetch(`${this.endpoint}?key=${apiKey}`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            contents: [{ parts: [{ text: prompt }] }],
+            tools: [{ google_search: {} }],
+            generationConfig: {
+              temperature: 0.2,
+              maxOutputTokens: 2048,
             },
-            body: JSON.stringify({
-              contents: [{ parts: [{ text: prompt }] }],
-              // ★ url_context 等は使わない（Browse機能はモデル/環境依存で落ちる）
-              generationConfig: { temperature: 0.2 },
-            }),
-            signal: controller.signal,
-          });
+          }),
+          signal: controller.signal,
+        });
 
-          if (!res.ok) {
-            const text = await res.text().catch(() => '');
-            // 429/503だけリトライ
-            if ((res.status === 429 || res.status === 503) && attempt < maxRetry) {
-              const backoff = 800 * (attempt + 1);
-              this.logger.warn(`Gemini ${res.status}. retry in ${backoff}ms`);
-              await new Promise((r) => setTimeout(r, backoff));
-              continue;
-            }
-            throw new Error(`Gemini API error: ${res.status} ${text}`);
+        if (!res.ok) {
+          const text = await res.text().catch(() => '');
+          if (res.status === 429 && attempt < maxRetry) {
+            const backoff = 15000 * (attempt + 1);
+            this.logger.warn(`Gemini 429 (Rate Limit). Retrying in ${backoff}ms...`);
+            await new Promise((r) => setTimeout(r, backoff));
+            continue;
           }
-
-          const data = (await res.json()) as GeminiResponse;
-          const out =
-            data.candidates?.[0]?.content?.parts?.map((p) => p.text ?? '').join('') ?? '';
-
-          if (!out.trim()) throw new Error('Gemini returned empty text');
-          return out;
-        } catch (e: unknown) {
-          // Abort も含めて、最後の試行で投げる
-          if (attempt >= maxRetry) throw e;
-          const backoff = 800 * (attempt + 1);
-          const errorMsg = e instanceof Error ? e.message : String(e);
-          this.logger.warn(`Gemini fetch failed. retry in ${backoff}ms: ${errorMsg}`);
-          await new Promise((r) => setTimeout(r, backoff));
+          throw new Error(`Gemini API error: ${res.status} ${text}`);
         }
+
+        const data = (await res.json()) as GeminiResponse;
+        const out =
+          data.candidates?.[0]?.content?.parts?.map((p) => p.text ?? '').join('') ?? '';
+
+        if (!out.trim()) throw new Error('Gemini returned empty text');
+        this.logger.debug(`Gemini RAW OUTPUT:\n${out}`);
+        return out;
+      } catch (e) {
+        if (attempt >= maxRetry) throw e;
+        const backoff = 2000 * (attempt + 1);
+        await new Promise((r) => setTimeout(r, backoff));
+      } finally {
+        clearTimeout(t);
       }
-      throw new Error('Gemini failed after retries');
-    } finally {
-      clearTimeout(t);
     }
+
+    throw new Error('Gemini failed after retries');
   }
 
   private parseJsonFromModel<T>(raw: string): T {
-    // ```json や ``` を除去
-    const cleaned = raw.replace(/```json/gi, '```').replace(/```/g, '').trim();
+    try {
+      // code fence削除
+      const cleaned = raw
+        .replace(/```json/gi, "")
+        .replace(/```/g, "")
+        .trim();
 
-    const firstBrace = Math.min(
-      ...['{', '['].map((c) => cleaned.indexOf(c)).filter((i) => i >= 0),
-    );
-    const lastBrace = Math.max(cleaned.lastIndexOf('}'), cleaned.lastIndexOf(']'));
+      // ★最初の [ と最後の ] だけ使う
+      const start = cleaned.indexOf("[");
+      const end = cleaned.lastIndexOf("]");
 
-    const slice =
-      firstBrace >= 0 && lastBrace >= 0 ? cleaned.slice(firstBrace, lastBrace + 1) : cleaned;
+      if (start === -1 || end === -1) {
+        throw new Error("JSON array not found");
+      }
 
-    return JSON.parse(slice) as T;
+      let json = cleaned.slice(start, end + 1);
+
+      // ★文字列内改行をエスケープ
+      json = json.replace(/"([^"\\]*(?:\\.[^"\\]*)*)"/gs, (match) => {
+        return match.replace(/\n/g, "\\n");
+      });
+
+      this.logger.debug("Gemini JSON EXTRACTED:\n" + json);
+
+      return JSON.parse(json) as T;
+    } catch (e) {
+      const msg = e instanceof Error ? e.message : String(e);
+      this.logger.error("JSON Parse Error FINAL: " + msg);
+      throw e;
+    }
   }
 
   private chunk<T>(arr: T[], size: number): T[][] {
@@ -330,64 +342,156 @@ export class GeminiService {
     category: NewsCategory,
     referenceName: string,
   ): Promise<GeneratedNews[]> {
-    const batches = this.chunk(urls, 10);
+    const batches = this.chunk(urls, 2);
     const results: GeneratedNews[] = [];
+    const seenUrls = new Set<string>();
+
+    const normalizeUrl = (u: string) => {
+      try {
+        const x = new URL(u);
+        x.search = "";
+        x.hash = "";
+        return x.toString();
+      } catch {
+        return u.trim();
+      }
+    };
+
+    const allowedUrlSet = new Set(urls.map(normalizeUrl));
+
+    const shouldSkip = (item: GeneratedNews) => {
+      if (!item?.reference_url) return true;
+      if (item.header?.includes('見つかりませんでした') || item.header?.includes('未確認')) return true;
+      return false;
+    };
+
+    const pushValidated = (item: GeneratedNews) => {
+      const ref = normalizeUrl(item.reference_url);
+
+      if (!allowedUrlSet.has(ref)) return false;
+
+      if (!ref || seenUrls.has(ref)) return false;
+      if (shouldSkip(item)) return false;
+
+      let publishedAt = item.reference_published_at;
+      if (!publishedAt || publishedAt.includes('-00') || isNaN(Date.parse(publishedAt))) {
+        publishedAt = new Date().toISOString();
+      }
+
+      seenUrls.add(ref);
+      results.push({
+        ...item,
+        category,
+        reference_url: ref,
+        reference_name: referenceName,
+        reference_published_at: publishedAt,
+        header: (item.header ?? "").slice(0, 490),
+        summary: (item.summary ?? "").slice(0, 490),
+      });
+      return true;
+    };
+
+    const buildPrompt = (targetUrls: string[]) => `
+  Return ONLY a JSON array. NO introductory text. NO markdown code blocks.
+  あなたはプロの野球ニュース編集者です。
+  Google Searchツールを使用して、以下の各URLの記事内容を確認してください。
+
+  # 重要
+  - もしURLに直接アクセスできない場合は、URL内の日付やキーワードを元に検索を行い、該当するニュースを特定してください。
+  - 事実（スコア、選手名、記録、公式発表内容）のみを抽出してください。
+  - どうしても内容が特定できないURLについては、その項目を配列に含めないでください。
+
+  # 厳守ルール
+  - 推測・憶測・断定の追加は禁止（記事に書かれている事実のみ）
+  - 元記事の全文コピーは禁止（要約と再構成のみ）
+  - 文字数を厳守してください（全角目安）
+  - 必ずJSON配列だけ返してください。説明は不要。
+
+  # 文字数（全角目安）
+  - header: 30〜38
+  - subheader: 40前後
+  - summary: 120〜180
+  - body: 200〜500
+
+  # 出力形式（必ずこの配列）
+  [
+    {
+      "reference_url": "URL（必須）",
+      "reference_name": "${referenceName}",
+      "reference_published_at": "記事内の日時を優先して必ずISO形式で。（日付が不明な場合は必ず本日（${new Date().toISOString()}）を使用し、決して 00 といった無効な数字を入れないでください。）",
+      "header": "…",
+      "subheader": "… or \\"\\"",
+      "summary": "…",
+      "body": "…（文末は「。」を使う）",
+      "category": "${category}"
+    }
+  ]
+
+  # 対象URL（新しい順のまま処理）
+  ${targetUrls.map((u) => `- ${u}`).join("\n")}
+  `;
+
+    // ★ 空レス時の再試行（バッチ→1件ずつ）
+    const requestOnce = async (targetUrls: string[]) => {
+      try {
+        const text = await this.geminiGenerateText(buildPrompt(targetUrls));
+
+        // 「```」しか返ってこない等の空レスを明示的に扱う
+        if (!text || !text.trim() || text.trim() === "```") return [];
+
+        const parsed = this.parseJsonFromModel<GeneratedNews[]>(text);
+        return parsed ?? [];
+      } catch (e) {
+        const msg = e instanceof Error ? e.message : String(e);
+        this.logger.warn(`requestOnce failed (treat as empty): ${msg}`);
+        return [];
+      }
+    };
+
 
     for (const batch of batches) {
-      const prompt = `
-        あなたはプロの野球ニュース編集者です。
-        以下のURLの記事をそれぞれ読み取り、事実に基づいて「要約」し、その要約を元に「再生成したニュース」を作ってください。
+      if (results.length > 0) await new Promise((r) => setTimeout(r, 10_000));
 
-        # 厳守ルール
-        - 推測・憶測・断定の追加は禁止（記事に書かれている事実のみ）
-        - 誇張禁止、煽り禁止
-        - 元記事の全文コピーは禁止（要約と再構成のみ）
-        - 出力は必ずJSONのみ（コードフェンス不要、余計な文章禁止）
+      try {
+        const parsed = await requestOnce(batch);
 
-        # 文字数（全角目安）
-        - header: 30〜38
-        - subheader: 40前後
-        - summary: 120〜180
-        - body: 200〜600
+        let added = 0;
+        for (const item of parsed) {
+          if (pushValidated(item)) added++;
+        }
 
-        # 出力形式（必ずこの配列）
-        [
-          {
-            "reference_url": "URL（必須）",
-            "reference_name": "${referenceName}",
-            "reference_published_at": "記事内の日時を優先して必ずISO形式で。（時間が不明な際は00:00:00で埋める。可能なら日本時間で。）",
-            "header": "…",
-            "subheader": "… or \\"\\"",
-            "summary": "…",
-            "body": "…",
-            "category": "${category}"
+        // ✅ 空レス（or 追加0件）のときだけ、そのバッチURLを“もう一度だけ”リトライ
+        if (parsed.length === 0 || added === 0) {
+          this.logger.warn(`Empty/zero-added response. Retrying per-URL for batch: ${batch.join(", ")}`);
+
+          // 1件ずつ（確実性上げる）
+          for (const u of batch) {
+            // すでに取れてるならスキップ
+            if (seenUrls.has(normalizeUrl(u))) continue;
+
+            await new Promise((r) => setTimeout(r, 4000)); // ちょい待つ（429/負荷対策）
+
+            try {
+              const parsedOne = await requestOnce([u]);
+              for (const item of parsedOne) {
+                pushValidated(item);
+              }
+            } catch (e) {
+              const errorMsg = e instanceof Error ? e.message : String(e);
+              this.logger.warn(`Retry(per-URL) failed for ${u}: ${errorMsg}`);
+            }
           }
-        ]
-
-        # 対象URL（新しい順のまま処理）
-        ${batch.map((u) => `- ${u}`).join('\n')}
-      `;
-      console.log("Prompt for Gemini:", prompt);
-
-      const text = await this.geminiGenerateText(prompt);
-      console.log("Raw text from Gemini:", text);
-      const parsed = this.parseJsonFromModel<GeneratedNews[]>(text);
-      console.log("Parsed Gemini output:", parsed);
-
-      for (const item of parsed ?? []) {
-        if (!item?.reference_url || !item?.header || !item?.summary || !item?.body) continue;
-        results.push({
-          ...item,
-          category,
-          reference_name: referenceName,
-        });
+        }
+      } catch (e) {
+        const errorMsg = e instanceof Error ? e.message : String(e);
+        this.logger.error(`Failed to process batch: ${errorMsg}`);
+        continue;
       }
     }
 
-    console.log(`Generated ${results.length} news items from Gemini.`);
-
     return results;
   }
+
 
   /** まとめ：NPB 取得→生成 */
   async collectAndGenerateNpbNews(limit = 30): Promise<GeneratedNews[]> {

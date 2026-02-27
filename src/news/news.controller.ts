@@ -15,7 +15,6 @@ export class NewsController {
   @Post('seed')
   async seed(@Query('category') category: NewsCategory = NewsCategory.NPB) {
     const status = await this.newsService.startSeedIfEmpty(category);
-    // 202的な意味でstatusを返す（HTTPコードまで厳密にしたければ @Res で調整）
     return status;
   }
 
@@ -24,7 +23,6 @@ export class NewsController {
     return this.newsService.getSeedStatus(category);
   }
 
-  // ★追加：reference_url で1件取得
   @Get('by-reference-url')
   getByReferenceUrl(@Query('url') url: string) {
     return this.newsService.findByReferenceUrl(url);

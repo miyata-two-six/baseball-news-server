@@ -124,13 +124,64 @@ export class NewsService {
   }
 
   async findByReferenceUrl(referenceUrl: string): Promise<News> {
-  const found = await this.newsRepository.findOne({
-    where: { reference_url: referenceUrl },
-  });
+    const found = await this.newsRepository.findOne({
+      where: { reference_url: referenceUrl },
+    });
 
-  if (!found) {
-    throw new NotFoundException('news not found for reference_url');
+    if (!found) {
+      throw new NotFoundException('news not found for reference_url');
+    }
+    return found;
   }
-  return found;
-}
+
+  /**
+   * ★カテゴリの最新ニュースを同期（差分のみ追加）
+   */
+  async syncLatest(category: NewsCategory) {
+    let generated: GeneratedNews[] = [];
+
+    if (category === NewsCategory.NPB) {
+      generated = await this.geminiService.collectAndGenerateNpbNews(5);
+    } else if (category === NewsCategory.MLB) {
+      generated = await this.geminiService.collectAndGenerateMlbNews(5);
+    } else if (category === NewsCategory.HSB) {
+      generated = await this.geminiService.collectAndGenerateHsbNews(5);
+    } else {
+      generated = await this.geminiService.collectAndGenerateOtherNews(5);
+    }
+
+    // ★既存URL取得
+    const existing = await this.newsRepository.find({
+      where: { category },
+      select: ["reference_url"],
+    });
+
+    const existingSet = new Set(existing.map(e => e.reference_url));
+
+    // ★差分だけ
+    const diff = generated.filter(g => !existingSet.has(g.reference_url));
+
+    if (diff.length === 0) {
+      this.logger.log("No new news");
+      return 0;
+    }
+
+    const entities = diff.map(g =>
+      this.newsRepository.create({
+        category,
+        reference_url: g.reference_url,
+        reference_name: g.reference_name,
+        reference_published_at: g.reference_published_at || undefined,
+        header: g.header,
+        subheader: g.subheader,
+        summary: g.summary,
+        body: g.body,
+      })
+    );
+
+    await this.newsRepository.save(entities);
+
+    this.logger.log(`Inserted ${entities.length} new news`);
+    return entities.length;
+  }
 }
