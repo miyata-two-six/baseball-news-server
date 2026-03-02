@@ -17,7 +17,8 @@ export class GeminiService {
   // 1. モデル名を実在する最新のものに変更
   // Groundingを使う場合は v1beta を使用するのが確実です
   private readonly endpoint =
-    'https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent';
+    // 'https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent';
+    'https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent';
 
   private requireEnv(name: string): string {
     const v = process.env[name];
@@ -102,7 +103,7 @@ export class GeminiService {
         return match.replace(/\n/g, "\\n");
       });
 
-      this.logger.debug("Gemini JSON EXTRACTED:\n" + json);
+      // this.logger.debug("Gemini JSON EXTRACTED:\n" + json);
 
       return JSON.parse(json) as T;
     } catch (e) {
@@ -342,7 +343,7 @@ export class GeminiService {
     category: NewsCategory,
     referenceName: string,
   ): Promise<GeneratedNews[]> {
-    const batches = this.chunk(urls, 2);
+    const batches = this.chunk(urls, 1);
     const results: GeneratedNews[] = [];
     const seenUrls = new Set<string>();
 
@@ -406,6 +407,8 @@ export class GeminiService {
   - 元記事の全文コピーは禁止（要約と再構成のみ）
   - 文字数を厳守してください（全角目安）
   - 必ずJSON配列だけ返してください。説明は不要。
+  - 絶対に[cite: ...]や出典の角括弧を出力しない
+  - 引用・参照の表記は禁止。出力はJSONのみ
 
   # 文字数（全角目安）
   - header: 30〜38
@@ -420,7 +423,7 @@ export class GeminiService {
       "reference_name": "${referenceName}",
       "reference_published_at": "記事内の日時を優先して必ずISO形式で。（日付が不明な場合は必ず本日（${new Date().toISOString()}）を使用し、決して 00 といった無効な数字を入れないでください。）",
       "header": "…",
-      "subheader": "… or \\"\\"",
+      "subheader": "…",
       "summary": "…",
       "body": "…（文末は「。」を使う）",
       "category": "${category}"
@@ -431,7 +434,7 @@ export class GeminiService {
   ${targetUrls.map((u) => `- ${u}`).join("\n")}
   `;
 
-    // ★ 空レス時の再試行（バッチ→1件ずつ）
+    // ★ 空レス時の再試行（最大3回までリトライ）
     const requestOnce = async (targetUrls: string[]) => {
       try {
         const text = await this.geminiGenerateText(buildPrompt(targetUrls));
@@ -448,37 +451,82 @@ export class GeminiService {
       }
     };
 
+    // ★ リトライロジック：空レス、または「見つかりません」のみの場合、最大3回リトライ
+    const requestWithRetry = async (targetUrls: string[], maxRetries = 3) => {
+      let attempt = 0;
+      const maxAttempts = maxRetries + 1;
+
+      while (attempt < maxAttempts) {
+        attempt++;
+        const delayMs = attempt > 1 ? 5000 * attempt : 0; // 初回は即座、以降は段階的に待つ
+
+        if (attempt > 1) {
+          this.logger.debug(`Retrying batch (attempt ${attempt}/${maxAttempts}) after ${delayMs}ms delay...`);
+          await new Promise((r) => setTimeout(r, delayMs));
+        }
+
+        const parsed = await requestOnce(targetUrls);
+
+        // 結果が空の場合はリトライ
+        if (parsed.length === 0) {
+          this.logger.debug(`Attempt ${attempt}: Empty response, retrying...`);
+          if (attempt < maxAttempts) continue;
+          else break;
+        }
+
+        // 結果がある場合は、「見つかりません」の場合のみリトライ対象として判定
+        const hasValidItems = parsed.some((item) => {
+          const header = item.header ?? "";
+          const notFound = header.includes("見つかりません") || header.includes("未確認") || header.includes("詳細不明");
+          return !notFound;
+        });
+
+        if (!hasValidItems) {
+          // すべてのアイテムが「見つかりません」
+          this.logger.debug(`Attempt ${attempt}: All items marked as "not found", retrying...`);
+          if (attempt < maxAttempts) continue;
+          else break;
+        }
+
+        // 有効なアイテムがある場合は、そのまま返却
+        return parsed;
+      }
+
+      this.logger.warn(`Exhausted retries (${maxAttempts} attempts). Returning empty array.`);
+      return [];
+    };
+
 
     for (const batch of batches) {
       if (results.length > 0) await new Promise((r) => setTimeout(r, 10_000));
 
       try {
-        const parsed = await requestOnce(batch);
+        const parsed = await requestWithRetry(batch, 2);
 
         let added = 0;
         for (const item of parsed) {
           if (pushValidated(item)) added++;
         }
 
-        // ✅ 空レス（or 追加0件）のときだけ、そのバッチURLを“もう一度だけ”リトライ
-        if (parsed.length === 0 || added === 0) {
-          this.logger.warn(`Empty/zero-added response. Retrying per-URL for batch: ${batch.join(", ")}`);
+        // ✅ それでも0件の場合は、1件ずつ最大2回リトライ
+        if (added === 0 && parsed.length === 0) {
+          this.logger.warn(`Batch still empty after retries. Attempting per-URL fallback for: ${batch.join(", ")}`);
 
-          // 1件ずつ（確実性上げる）
+          // 1件ずつ処理（各URLに対して1回のリトライ）
           for (const u of batch) {
             // すでに取れてるならスキップ
             if (seenUrls.has(normalizeUrl(u))) continue;
 
-            await new Promise((r) => setTimeout(r, 4000)); // ちょい待つ（429/負荷対策）
+            await new Promise((r) => setTimeout(r, 4000));
 
             try {
-              const parsedOne = await requestOnce([u]);
+              const parsedOne = await requestWithRetry([u], 1);
               for (const item of parsedOne) {
                 pushValidated(item);
               }
             } catch (e) {
               const errorMsg = e instanceof Error ? e.message : String(e);
-              this.logger.warn(`Retry(per-URL) failed for ${u}: ${errorMsg}`);
+              this.logger.warn(`Per-URL fallback failed for ${u}: ${errorMsg}`);
             }
           }
         }

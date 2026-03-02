@@ -33,7 +33,7 @@ export class NewsService {
     return this.newsRepository.find({
       where: { category: category },
       order: { reference_published_at: 'DESC' },
-      take: 100,
+      take: category === NewsCategory.NPB ? 30 : 10,
     });
   }
 
@@ -46,13 +46,13 @@ export class NewsService {
     let generated: GeneratedNews[] = [];
 
     if (category === NewsCategory.NPB) {
-      generated = await this.geminiService.collectAndGenerateNpbNews(30);
+      generated = await this.geminiService.collectAndGenerateNpbNews();
     } else if (category === NewsCategory.MLB) {
-      generated = await this.geminiService.collectAndGenerateMlbNews(10);
+      generated = await this.geminiService.collectAndGenerateMlbNews();
     } else if (category === NewsCategory.HSB) {
-      generated = await this.geminiService.collectAndGenerateHsbNews(10);
+      generated = await this.geminiService.collectAndGenerateHsbNews();
     } else {
-      generated = await this.geminiService.collectAndGenerateOtherNews(10);
+      generated = await this.geminiService.collectAndGenerateOtherNews();
     }
     console.log("Generated news from Gemini:", generated);
     console.log("Mapped category for DB:", category);
