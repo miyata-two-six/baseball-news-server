@@ -1,4 +1,4 @@
-import { NewsCategory } from "src/enums/news/news-category.enum";
+import { NewsCategory } from '../src/enums/news/news-category.enum';
 
 export interface GeneratedNews {
   reference_url: string;

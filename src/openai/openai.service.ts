@@ -138,7 +138,6 @@ export class OpenaiService {
     return out;
   }
 
-  // ====== ここから下（URL抽出系）はあなたのまま ======
 
   async fetchLatestNpbUrls(limit = 30): Promise<string[]> {
     const baseUrl = "https://npb.jp/news/npb_all.html";

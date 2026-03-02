@@ -1,4 +1,4 @@
-import { NewsCategory } from 'src/enums/news/news-category.enum';
+import { NewsCategory } from '../enums/news/news-category.enum';
 import {
   Entity,
   PrimaryGeneratedColumn,
