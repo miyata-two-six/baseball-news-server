@@ -5,6 +5,8 @@ import { GeminiService } from '../gemini/gemini.service';
 import { News } from '../entities/news.entity';
 import { NewsCategory } from '../enums/news/news-category.enum';
 import { GeneratedNews } from 'types/generated-news';
+import { NewsListItemDto } from './dto/news-list-item.dto';
+import { NewsDetailDto } from './dto/news-detail.dto';
 
 type SeedStatus =
   | { status: 'idle' }
@@ -29,12 +31,21 @@ export class NewsService {
     private readonly geminiService: GeminiService,
   ) {}
 
-  async findByCategory(category: NewsCategory): Promise<News[]> {
-    return this.newsRepository.find({
-      where: { category: category },
-      order: { reference_published_at: 'DESC' },
-      take: category === NewsCategory.NPB ? 30 : 10,
-    });
+  async findByCategory(category: NewsCategory): Promise<NewsListItemDto[]> {
+    return this.newsRepository
+      .createQueryBuilder('news')
+      .select([
+        'news.id',
+        'news.category',
+        'news.header',
+        'news.summary',
+        'news.reference_url',
+        'news.reference_published_at',
+      ])
+      .where('news.category = :category', { category })
+      .orderBy('news.reference_published_at', 'DESC')
+      .take(category === NewsCategory.NPB ? 30 : 10)
+      .getMany() as Promise<NewsListItemDto[]>;
   }
 
   getSeedStatus(category: NewsCategory): SeedStatus {
@@ -123,7 +134,7 @@ export class NewsService {
     return this.seedStatus[category];
   }
 
-  async findByReferenceUrl(referenceUrl: string): Promise<News> {
+  async findByReferenceUrl(referenceUrl: string): Promise<NewsDetailDto> {
     const found = await this.newsRepository.findOne({
       where: { reference_url: referenceUrl },
     });
@@ -131,7 +142,7 @@ export class NewsService {
     if (!found) {
       throw new NotFoundException('news not found for reference_url');
     }
-    return found;
+    return found as NewsDetailDto;
   }
 
   /**
