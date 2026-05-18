@@ -7,24 +7,24 @@ export class NewsController {
   constructor(private readonly newsService: NewsService) {}
 
   @Get()
-  async getNews(@Query('category') category: NewsCategory = NewsCategory.NPB) {
-    return this.newsService.findByCategory(category);
+  async getNewsByCategory(@Query('category') category: NewsCategory = NewsCategory.NPB) {
+    return this.newsService.getNewsByCategory(category);
   }
 
   // ★seed開始（即返し）
   @Post('seed')
-  async seed(@Query('category') category: NewsCategory = NewsCategory.NPB) {
+  async startSeedIfEmpty(@Query('category') category: NewsCategory = NewsCategory.NPB) {
     const status = await this.newsService.startSeedIfEmpty(category);
     return status;
   }
 
   @Get('seed/status')
-  seedStatus(@Query('category') category: NewsCategory = NewsCategory.NPB) {
+  getSeedStatus(@Query('category') category: NewsCategory = NewsCategory.NPB) {
     return this.newsService.getSeedStatus(category);
   }
 
   @Get('by-reference-url')
-  getByReferenceUrl(@Query('url') url: string) {
-    return this.newsService.findByReferenceUrl(url);
+  getNewsDetailByReferenceUrl(@Query('url') url: string) {
+    return this.newsService.getNewsDetailByReferenceUrl(url);
   }
 }

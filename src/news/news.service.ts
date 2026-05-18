@@ -7,12 +7,7 @@ import { NewsCategory } from '../enums/news/news-category.enum';
 import { GeneratedNews } from 'types/generated-news';
 import { NewsListItemDto } from './dto/news-list-item.dto';
 import { NewsDetailDto } from './dto/news-detail.dto';
-
-type SeedStatus =
-  | { status: 'idle' }
-  | { status: 'running'; startedAt: string }
-  | { status: 'done'; startedAt: string; finishedAt: string; inserted: number }
-  | { status: 'error'; startedAt: string; error: string };
+import { SeedStatus } from './types/seed-status.types';
 
 @Injectable()
 export class NewsService {
@@ -31,7 +26,7 @@ export class NewsService {
     private readonly geminiService: GeminiService,
   ) {}
 
-  async findByCategory(category: NewsCategory): Promise<NewsListItemDto[]> {
+  async getNewsByCategory(category: NewsCategory): Promise<NewsListItemDto[]> {
     return this.newsRepository
       .createQueryBuilder('news')
       .select([
@@ -49,10 +44,10 @@ export class NewsService {
   }
 
   getSeedStatus(category: NewsCategory): SeedStatus {
-    return this.seedStatus[category] ?? { status: 'idle' };
+    return this.seedStatus[category];
   }
 
-  private async performSeed(category: NewsCategory, startedAt: string): Promise<void> {
+  private async performSeed(category: NewsCategory, startedAt: Date): Promise<void> {
     let inserted = 0;
     let generated: GeneratedNews[] = [];
 
@@ -89,7 +84,7 @@ export class NewsService {
     this.seedStatus[category] = {
       status: 'done',
       startedAt,
-      finishedAt: new Date().toISOString(),
+      finishedAt: new Date(),
       inserted,
     };
   }
@@ -109,14 +104,14 @@ export class NewsService {
     if (count > 0) {
       this.seedStatus[category] = {
         status: 'done',
-        startedAt: new Date().toISOString(),
-        finishedAt: new Date().toISOString(),
+        startedAt: new Date(),
+        finishedAt: new Date(),
         inserted: 0,
       };
       return this.seedStatus[category];
     }
 
-    const startedAt = new Date().toISOString();
+    const startedAt = new Date();
     this.seedStatus[category] = { status: 'running', startedAt };
 
     // ★非同期ジョブ開始（APIは待たない）
@@ -134,7 +129,7 @@ export class NewsService {
     return this.seedStatus[category];
   }
 
-  async findByReferenceUrl(referenceUrl: string): Promise<NewsDetailDto> {
+  async getNewsDetailByReferenceUrl(referenceUrl: string): Promise<NewsDetailDto> {
     const found = await this.newsRepository.findOne({
       where: { reference_url: referenceUrl },
     });
