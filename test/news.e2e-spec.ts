@@ -164,4 +164,44 @@ describe('NewsController (e2e)', () => {
 
     expect(newsServiceMock.getNewsDetailByReferenceUrl).toHaveBeenCalledWith('https://example.com/detail');
   });
+
+  it('GET /news/by-reference-url with non-existent URL should return 500', async () => {
+    const error = new Error('NotFoundException: news not found for reference_url');
+    newsServiceMock.getNewsDetailByReferenceUrl.mockRejectedValue(error);
+
+    await request(app.getHttpServer())
+      .get('/baseball-news/news/by-reference-url')
+      .query({ url: 'https://non-existent.example/news' })
+      .expect(500);
+
+    expect(newsServiceMock.getNewsDetailByReferenceUrl).toHaveBeenCalledWith(
+      'https://non-existent.example/news',
+    );
+  });
+
+  it('GET /news/by-reference-url without url param should call service with undefined', async () => {
+    newsServiceMock.getNewsDetailByReferenceUrl.mockRejectedValue(
+      new Error('NotFoundException: news not found for reference_url'),
+    );
+
+    await request(app.getHttpServer())
+      .get('/baseball-news/news/by-reference-url')
+      .expect(500);
+
+    expect(newsServiceMock.getNewsDetailByReferenceUrl).toHaveBeenCalledWith(undefined);
+  });
+
+  it('POST /news/seed with invalid category should coerce to default NPB', async () => {
+    newsServiceMock.startSeedIfEmpty.mockResolvedValue({
+      status: 'running',
+      startedAt: new Date('2026-05-25T00:00:00.000Z'),
+    });
+
+    await request(app.getHttpServer())
+      .post('/baseball-news/news/seed')
+      .query({ category: 'INVALID_CATEGORY' })
+      .expect(201);
+
+    expect(newsServiceMock.startSeedIfEmpty).toHaveBeenCalled();
+  });
 });

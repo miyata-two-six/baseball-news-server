@@ -6,7 +6,7 @@
     "^types/(.*)$": "<rootDir>/../types/$1"
   },
   "testEnvironment": "node",
-  "testRegex": ".e2e-spec.ts$",
+  "testRegex": ".e2e.*\\.ts$",
   "transform": {
     "^.+\\.(t|j)s$": "ts-jest"
   }
