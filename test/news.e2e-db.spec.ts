@@ -24,9 +24,37 @@ interface NewsDetailResponse {
 describe('NewsController (e2e with DB)', () => {
   let app: INestApplication<App>;
   let dataSource: DataSource;
+  let moduleFixture: TestingModule;
+
+  const createSchema = async () => {
+    await dataSource.query('DROP TABLE IF EXISTS "news";');
+    await dataSource.query('DROP TYPE IF EXISTS "news_category_enum";');
+    await dataSource.query(`
+      CREATE TYPE "news_category_enum" AS ENUM ('npb', 'mlb', 'hsb', 'other');
+    `);
+    await dataSource.query(`
+      CREATE TABLE "news" (
+        "id" SERIAL NOT NULL,
+        "category" "news_category_enum" NOT NULL DEFAULT 'npb',
+        "header" character varying(100) NOT NULL,
+        "subheader" character varying(100) NOT NULL,
+        "body" character varying(1000) NOT NULL,
+        "summary" character varying(300) NOT NULL,
+        "reference_name" character varying(200) NOT NULL,
+        "reference_url" character varying(600) NOT NULL,
+        "reference_published_at" TIMESTAMPTZ NOT NULL,
+        "created_at" TIMESTAMPTZ NOT NULL DEFAULT now(),
+        "updated_at" TIMESTAMPTZ NOT NULL DEFAULT now(),
+        CONSTRAINT "PK_news_id" PRIMARY KEY ("id"),
+        CONSTRAINT "UQ_news_reference_url" UNIQUE ("reference_url")
+      );
+    `);
+    await dataSource.query(`CREATE INDEX "IDX_news_category" ON "news" ("category");`);
+    await dataSource.query(`CREATE INDEX "IDX_news_created_at" ON "news" ("created_at");`);
+  };
 
   beforeAll(async () => {
-    const moduleFixture: TestingModule = await Test.createTestingModule({
+    moduleFixture = await Test.createTestingModule({
       imports: [AppModule],
     }).compile();
 
@@ -35,8 +63,7 @@ describe('NewsController (e2e with DB)', () => {
     await app.init();
 
     dataSource = moduleFixture.get<DataSource>(DataSource);
-    // ensure clean table
-    await dataSource.getRepository(News).clear();
+    await createSchema();
   });
 
   afterAll(async () => {
@@ -44,6 +71,7 @@ describe('NewsController (e2e with DB)', () => {
       await dataSource.getRepository(News).clear();
     } catch {}
     await app.close();
+    await moduleFixture.close();
     try {
       // attempt to destroy datasource if available
       if (dataSource) await dataSource.destroy();

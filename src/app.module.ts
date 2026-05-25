@@ -6,6 +6,8 @@ import { News } from './entities/news.entity';
 import { TypeOrmModule } from '@nestjs/typeorm';
 import { ScheduleModule } from "@nestjs/schedule";
 
+const isTest = process.env.NODE_ENV === 'test';
+
 @Module({
   imports: [
     ScheduleModule.forRoot(),
@@ -19,7 +21,7 @@ import { ScheduleModule } from "@nestjs/schedule";
       entities: [
         News,
       ],
-      synchronize: true,
+      synchronize: !isTest,
     }),
     NewsModule,
   ],
