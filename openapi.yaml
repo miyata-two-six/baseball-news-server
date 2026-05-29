@@ -38,6 +38,7 @@ paths:
                 type: array
                 items:
                   $ref: '#/components/schemas/NewsListItem'
+  /news/seed:
     post:
       summary: Seed news for category if empty
       operationId: startSeedIfEmpty
@@ -49,7 +50,7 @@ paths:
             $ref: '#/components/schemas/NewsCategory'
           description: News category. Defaults to npb.
       responses:
-        '200':
+        '201':
           description: Seed status
           content:
             application/json:
