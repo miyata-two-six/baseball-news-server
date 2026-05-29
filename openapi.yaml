@@ -1,0 +1,244 @@
+openapi: 3.0.3
+info:
+  title: Baseball News API
+  version: 1.0.0
+  description: Baseball news API for NPB, MLB, HSB and other categories.
+servers:
+  - url: http://localhost:3000/baseball-news
+paths:
+  /:
+    get:
+      summary: Health check
+      operationId: getHello
+      responses:
+        '200':
+          description: OK
+          content:
+            text/plain:
+              schema:
+                type: string
+                example: Hello World!
+  /news:
+    get:
+      summary: Get news by category
+      operationId: getNewsByCategory
+      parameters:
+        - name: category
+          in: query
+          required: false
+          schema:
+            $ref: '#/components/schemas/NewsCategory'
+          description: News category. Defaults to npb.
+      responses:
+        '200':
+          description: News list
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: '#/components/schemas/NewsListItem'
+    post:
+      summary: Seed news for category if empty
+      operationId: startSeedIfEmpty
+      parameters:
+        - name: category
+          in: query
+          required: false
+          schema:
+            $ref: '#/components/schemas/NewsCategory'
+          description: News category. Defaults to npb.
+      responses:
+        '200':
+          description: Seed status
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SeedStatus'
+  /news/seed/status:
+    get:
+      summary: Get seed status
+      operationId: getSeedStatus
+      parameters:
+        - name: category
+          in: query
+          required: false
+          schema:
+            $ref: '#/components/schemas/NewsCategory'
+          description: News category. Defaults to npb.
+      responses:
+        '200':
+          description: Seed status
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SeedStatus'
+  /news/by-reference-url:
+    get:
+      summary: Get news detail by reference URL
+      operationId: getNewsDetailByReferenceUrl
+      parameters:
+        - name: url
+          in: query
+          required: true
+          schema:
+            type: string
+          description: Reference URL of the news item.
+      responses:
+        '200':
+          description: News detail
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/NewsDetail'
+        '404':
+          description: News not found
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  statusCode:
+                    type: integer
+                    example: 404
+                  message:
+                    type: string
+                    example: news not found for reference_url
+                  error:
+                    type: string
+                    example: Not Found
+components:
+  schemas:
+    NewsCategory:
+      type: string
+      enum:
+        - npb
+        - mlb
+        - hsb
+        - other
+    NewsListItem:
+      type: object
+      properties:
+        id:
+          type: integer
+          example: 1
+        category:
+          $ref: '#/components/schemas/NewsCategory'
+        header:
+          type: string
+          example: Example headline
+        summary:
+          type: string
+          example: Example summary
+        reference_url:
+          type: string
+          example: https://example.com/news/1
+        reference_published_at:
+          type: string
+          format: date-time
+          example: '2026-05-25T00:00:00.000Z'
+      required:
+        - id
+        - category
+        - header
+        - summary
+        - reference_url
+        - reference_published_at
+    NewsDetail:
+      type: object
+      properties:
+        id:
+          type: integer
+          example: 1
+        category:
+          $ref: '#/components/schemas/NewsCategory'
+        header:
+          type: string
+          example: Example headline
+        subheader:
+          type: string
+          example: Example subheadline
+        body:
+          type: string
+          example: Example body text.
+        summary:
+          type: string
+          example: Example summary
+        reference_name:
+          type: string
+          example: Example Source
+        reference_url:
+          type: string
+          example: https://example.com/news/1
+        reference_published_at:
+          type: string
+          format: date-time
+          example: '2026-05-25T00:00:00.000Z'
+        created_at:
+          type: string
+          format: date-time
+          example: '2026-05-25T00:00:00.000Z'
+        updated_at:
+          type: string
+          format: date-time
+          example: '2026-05-25T00:00:00.000Z'
+      required:
+        - id
+        - category
+        - header
+        - subheader
+        - body
+        - summary
+        - reference_name
+        - reference_url
+        - reference_published_at
+        - created_at
+        - updated_at
+    SeedStatus:
+      oneOf:
+        - type: object
+          properties:
+            status:
+              type: string
+              enum: [idle]
+          required: [status]
+        - type: object
+          properties:
+            status:
+              type: string
+              enum: [running]
+            startedAt:
+              type: string
+              format: date-time
+              example: '2026-05-25T00:00:00.000Z'
+          required: [status, startedAt]
+        - type: object
+          properties:
+            status:
+              type: string
+              enum: [done]
+            startedAt:
+              type: string
+              format: date-time
+              example: '2026-05-25T00:00:00.000Z'
+            finishedAt:
+              type: string
+              format: date-time
+              example: '2026-05-25T00:00:01.000Z'
+            inserted:
+              type: integer
+              example: 10
+          required: [status, startedAt, finishedAt, inserted]
+        - type: object
+          properties:
+            status:
+              type: string
+              enum: [error]
+            startedAt:
+              type: string
+              format: date-time
+              example: '2026-05-25T00:00:00.000Z'
+            error:
+              type: string
+              example: Something went wrong
+          required: [status, startedAt, error]
